@@ -1,0 +1,259 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LifeLog</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: -apple-system, system-ui, sans-serif;
+      margin: 0;
+      padding: 12px 14px 40px;
+      background: #f5f5f5;
+      color: #1a1a1a;
+    }
+    @media (prefers-color-scheme: dark) {
+      body { background: #121212; color: #eee; }
+      .card { background: #1e1e1e !important; }
+      .day-header { color: #aaa !important; }
+      select, .field-toggles { background: #1e1e1e; color: #eee; border-color: #444 !important; }
+    }
+    h1 { font-size: 20px; margin: 4px 0 12px; }
+    .controls { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+    select {
+      font-size: 14px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    .field-toggles {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      font-size: 13px;
+      margin-bottom: 16px;
+      padding: 8px 10px;
+      background: rgba(0,0,0,0.04);
+      border-radius: 8px;
+    }
+    .field-toggles label { display: flex; align-items: center; gap: 4px; }
+    .day-header {
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #666;
+      margin: 20px 0 8px;
+    }
+    .card {
+      background: white;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+    }
+    .card-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .tag {
+      font-size: 11px;
+      font-weight: 600;
+      color: white;
+      padding: 2px 8px;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .time { font-size: 12px; color: #888; }
+    .source { font-size: 11px; color: #aaa; margin-left: 6px; }
+    .text { font-size: 15px; line-height: 1.4; }
+    .meta { font-size: 12px; color: #888; margin-top: 4px; }
+    .empty { color: #888; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>LifeLog</h1>
+  <div class="controls">
+    <select id="days">
+      <option value="1">1d</option>
+      <option value="3" selected>3d</option>
+      <option value="7">7d</option>
+      <option value="14">14d</option>
+      <option value="30">30d</option>
+    </select>
+    <select id="domain">
+      <option value="">all domains</option>
+      <option value="bowel_movement">bowel_movement</option>
+      <option value="sleep">sleep</option>
+      <option value="food">food</option>
+      <option value="caffeine">caffeine</option>
+      <option value="alcohol">alcohol</option>
+      <option value="medication">medication</option>
+      <option value="symptom">symptom</option>
+      <option value="mood">mood</option>
+      <option value="other">other</option>
+      <option value="uncertain">uncertain</option>
+    </select>
+  </div>
+  <div class="field-toggles">
+    <label><input type="checkbox" id="col-domain" checked> domain</label>
+    <label><input type="checkbox" id="col-weather" checked> weather</label>
+    <label><input type="checkbox" id="col-location" checked> location</label>
+    <label><input type="checkbox" id="col-source"> source</label>
+  </div>
+  <div id="content">Loading…</div>
+
+  <script>
+    const FUNCTIONS_BASE = 'https://lweafdsfuptnnmgnaqlg.supabase.co/functions/v1/view';
+    const params = new URLSearchParams(location.search);
+    const token = params.get('token') || '';
+
+    const DOMAIN_COLORS = {
+      bowel_movement: '#8d6e63', sleep: '#5c6bc0', food: '#fb8c00', caffeine: '#6d4c41',
+      alcohol: '#ab47bc', medication: '#26a69a', symptom: '#e53935', mood: '#ffca28',
+      other: '#78909c', uncertain: '#bdbdbd'
+    };
+
+    const els = {
+      days: document.getElementById('days'),
+      domain: document.getElementById('domain'),
+      colDomain: document.getElementById('col-domain'),
+      colWeather: document.getElementById('col-weather'),
+      colLocation: document.getElementById('col-location'),
+      colSource: document.getElementById('col-source'),
+      content: document.getElementById('content'),
+    };
+
+    const PREF_KEY = 'lifelog_view_prefs';
+    function loadPrefs() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(PREF_KEY) || '{}');
+        if (saved.days) els.days.value = saved.days;
+        if (saved.domain) els.domain.value = saved.domain;
+        if (typeof saved.colDomain === 'boolean') els.colDomain.checked = saved.colDomain;
+        if (typeof saved.colWeather === 'boolean') els.colWeather.checked = saved.colWeather;
+        if (typeof saved.colLocation === 'boolean') els.colLocation.checked = saved.colLocation;
+        if (typeof saved.colSource === 'boolean') els.colSource.checked = saved.colSource;
+      } catch {}
+    }
+    function savePrefs() {
+      localStorage.setItem(PREF_KEY, JSON.stringify({
+        days: els.days.value, domain: els.domain.value,
+        colDomain: els.colDomain.checked, colWeather: els.colWeather.checked,
+        colLocation: els.colLocation.checked, colSource: els.colSource.checked,
+      }));
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function localTimeString(createdAt, tzOffset) {
+      const date = new Date(createdAt);
+      if (!tzOffset) return date.toISOString();
+      const match = tzOffset.match(/^([+-])(\d{2}):(\d{2})$/);
+      if (!match) return date.toISOString();
+      const sign = match[1] === '-' ? -1 : 1;
+      const offsetMinutes = sign * (parseInt(match[2]) * 60 + parseInt(match[3]));
+      const shifted = new Date(date.getTime() + offsetMinutes * 60 * 1000);
+      const hours = shifted.getUTCHours();
+      const minutes = String(shifted.getUTCMinutes()).padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      const displayHour = hours % 12 === 0 ? 12 : hours % 12;
+      return `${shifted.getUTCMonth() + 1}/${shifted.getUTCDate()} ${displayHour}:${minutes} ${ampm}`;
+    }
+
+    function dayKey(createdAt, tzOffset) {
+      const date = new Date(createdAt);
+      if (!tzOffset) return date.toISOString().slice(0, 10);
+      const match = tzOffset.match(/^([+-])(\d{2}):(\d{2})$/);
+      if (!match) return date.toISOString().slice(0, 10);
+      const sign = match[1] === '-' ? -1 : 1;
+      const offsetMinutes = sign * (parseInt(match[2]) * 60 + parseInt(match[3]));
+      const shifted = new Date(date.getTime() + offsetMinutes * 60 * 1000);
+      return shifted.toISOString().slice(0, 10);
+    }
+
+    function render(entries) {
+      if (!entries.length) {
+        els.content.innerHTML = '<p class="empty">No entries in this range.</p>';
+        return;
+      }
+      const grouped = new Map();
+      for (const e of entries) {
+        const key = dayKey(e.created_at, e.local_tz_offset);
+        if (!grouped.has(key)) grouped.set(key, []);
+        grouped.get(key).push(e);
+      }
+
+      let html = '';
+      for (const [day, dayEntries] of grouped) {
+        html += `<h2 class="day-header">${day}</h2>`;
+        for (const e of dayEntries) {
+          const color = DOMAIN_COLORS[e.domain_tag] || '#bdbdbd';
+          const time = localTimeString(e.created_at, e.local_tz_offset);
+          const metaBits = [];
+          if (els.colWeather.checked) {
+            if (e.on_flight) metaBits.push('✈️ in-flight');
+            else if (e.weather_temp_f != null) metaBits.push(`${Math.round(e.weather_temp_f)}°F ${e.weather_condition || ''}`.trim());
+          }
+          if (els.colLocation.checked && e.city) {
+            metaBits.push(`${e.city}${e.state ? ', ' + e.state : ''}`);
+          }
+          const meta = metaBits.length ? `<div class="meta">${escapeHtml(metaBits.join(' · '))}</div>` : '';
+          const domainTag = els.colDomain.checked
+            ? `<span class="tag" style="background:${color}">${escapeHtml(e.domain_tag || 'uncertain')}</span>`
+            : '';
+          const sourceTag = els.colSource.checked ? `<span class="source">${escapeHtml(e.source)}</span>` : '';
+
+          html += `
+            <div class="card">
+              <div class="card-top">
+                <span>${domainTag}${sourceTag}</span>
+                <span class="time">${time}</span>
+              </div>
+              <div class="text">${escapeHtml(e.raw_text)}</div>
+              ${meta}
+            </div>`;
+        }
+      }
+      els.content.innerHTML = html;
+    }
+
+    async function load() {
+      if (!token) {
+        els.content.innerHTML = '<p class="empty">Missing ?token= in URL.</p>';
+        return;
+      }
+      els.content.innerHTML = 'Loading…';
+      const url = `${FUNCTIONS_BASE}?token=${encodeURIComponent(token)}&days=${els.days.value}&domain=${encodeURIComponent(els.domain.value)}`;
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) {
+          els.content.innerHTML = `<p class="empty">Error: ${escapeHtml(data.error || res.status)}</p>`;
+          return;
+        }
+        window.__lastEntries = data.entries || [];
+        render(window.__lastEntries);
+      } catch (err) {
+        els.content.innerHTML = `<p class="empty">Failed to load: ${escapeHtml(String(err))}</p>`;
+      }
+    }
+
+    [els.days, els.domain, els.colDomain, els.colWeather, els.colLocation, els.colSource].forEach((el) => {
+      el.addEventListener('change', () => {
+        savePrefs();
+        if (el === els.days || el === els.domain) load();
+        else if (window.__lastEntries) render(window.__lastEntries);
+      });
+    });
+
+    loadPrefs();
+    load();
+  </script>
+</body>
+</html>
