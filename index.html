@@ -151,29 +151,36 @@
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
-    function offsetMinutesFrom(tzOffset) {
-      if (!tzOffset) return 0;
-      const match = tzOffset.match(/^([+-])(\d{2}):(\d{2})$/);
-      if (!match) return 0;
-      const sign = match[1] === '-' ? -1 : 1;
-      return sign * (parseInt(match[2]) * 60 + parseInt(match[3]));
-    }
-
-    function localTimeString(createdAt, tzOffset) {
+    // local_time comes pre-computed from the DB (raw_entries_local view) as a
+    // naive "wall clock" string, e.g. "2026-07-25T12:38:01.008287" -- parsed
+    // via regex, not `new Date()`, since Date() would reinterpret a
+    // zone-less string using the browser's own timezone and silently shift
+    // it again.
+    function localTimeString(localTime, createdAt) {
+      if (localTime) {
+        const m = localTime.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+        if (m) {
+          const [, , month, day, hour, minute] = m;
+          const h = parseInt(hour);
+          const ampm = h >= 12 ? 'PM' : 'AM';
+          const displayHour = h % 12 === 0 ? 12 : h % 12;
+          return `${parseInt(month)}/${parseInt(day)} ${displayHour}:${minute} ${ampm}`;
+        }
+      }
       const date = new Date(createdAt);
-      const shifted = new Date(date.getTime() + offsetMinutesFrom(tzOffset) * 60 * 1000);
-      const hours = shifted.getUTCHours();
-      const minutes = String(shifted.getUTCMinutes()).padStart(2, '0');
+      const hours = date.getUTCHours();
+      const minutes = String(date.getUTCMinutes()).padStart(2, '0');
       const ampm = hours >= 12 ? 'PM' : 'AM';
       const displayHour = hours % 12 === 0 ? 12 : hours % 12;
-      const label = `${shifted.getUTCMonth() + 1}/${shifted.getUTCDate()} ${displayHour}:${minutes} ${ampm}`;
-      return tzOffset ? label : `${label} UTC`;
+      return `${date.getUTCMonth() + 1}/${date.getUTCDate()} ${displayHour}:${minutes} ${ampm} UTC`;
     }
 
-    function dayKey(createdAt, tzOffset) {
-      const date = new Date(createdAt);
-      const shifted = new Date(date.getTime() + offsetMinutesFrom(tzOffset) * 60 * 1000);
-      return shifted.toISOString().slice(0, 10);
+    function dayKey(localTime, createdAt) {
+      if (localTime) {
+        const m = localTime.match(/^(\d{4}-\d{2}-\d{2})/);
+        if (m) return m[1];
+      }
+      return new Date(createdAt).toISOString().slice(0, 10);
     }
 
     function render(entries) {
@@ -183,7 +190,7 @@
       }
       const grouped = new Map();
       for (const e of entries) {
-        const key = dayKey(e.created_at, e.local_tz_offset);
+        const key = dayKey(e.local_time, e.created_at);
         if (!grouped.has(key)) grouped.set(key, []);
         grouped.get(key).push(e);
       }
@@ -193,7 +200,7 @@
         html += `<h2 class="day-header">${day}</h2>`;
         for (const e of dayEntries) {
           const color = DOMAIN_COLORS[e.domain_tag] || '#bdbdbd';
-          const time = localTimeString(e.created_at, e.local_tz_offset);
+          const time = localTimeString(e.local_time, e.created_at);
           const metaBits = [];
           if (els.colWeather.checked) {
             if (e.on_flight) metaBits.push('✈️ in-flight');
