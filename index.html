@@ -151,29 +151,28 @@
       return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     }
 
+    function offsetMinutesFrom(tzOffset) {
+      if (!tzOffset) return 0;
+      const match = tzOffset.match(/^([+-])(\d{2}):(\d{2})$/);
+      if (!match) return 0;
+      const sign = match[1] === '-' ? -1 : 1;
+      return sign * (parseInt(match[2]) * 60 + parseInt(match[3]));
+    }
+
     function localTimeString(createdAt, tzOffset) {
       const date = new Date(createdAt);
-      if (!tzOffset) return date.toISOString();
-      const match = tzOffset.match(/^([+-])(\d{2}):(\d{2})$/);
-      if (!match) return date.toISOString();
-      const sign = match[1] === '-' ? -1 : 1;
-      const offsetMinutes = sign * (parseInt(match[2]) * 60 + parseInt(match[3]));
-      const shifted = new Date(date.getTime() + offsetMinutes * 60 * 1000);
+      const shifted = new Date(date.getTime() + offsetMinutesFrom(tzOffset) * 60 * 1000);
       const hours = shifted.getUTCHours();
       const minutes = String(shifted.getUTCMinutes()).padStart(2, '0');
       const ampm = hours >= 12 ? 'PM' : 'AM';
       const displayHour = hours % 12 === 0 ? 12 : hours % 12;
-      return `${shifted.getUTCMonth() + 1}/${shifted.getUTCDate()} ${displayHour}:${minutes} ${ampm}`;
+      const label = `${shifted.getUTCMonth() + 1}/${shifted.getUTCDate()} ${displayHour}:${minutes} ${ampm}`;
+      return tzOffset ? label : `${label} UTC`;
     }
 
     function dayKey(createdAt, tzOffset) {
       const date = new Date(createdAt);
-      if (!tzOffset) return date.toISOString().slice(0, 10);
-      const match = tzOffset.match(/^([+-])(\d{2}):(\d{2})$/);
-      if (!match) return date.toISOString().slice(0, 10);
-      const sign = match[1] === '-' ? -1 : 1;
-      const offsetMinutes = sign * (parseInt(match[2]) * 60 + parseInt(match[3]));
-      const shifted = new Date(date.getTime() + offsetMinutes * 60 * 1000);
+      const shifted = new Date(date.getTime() + offsetMinutesFrom(tzOffset) * 60 * 1000);
       return shifted.toISOString().slice(0, 10);
     }
 
