@@ -16,6 +16,7 @@ const DOMAIN_COLORS = {
 
 let currentPersonId = null;
 let pendingPhotos = []; // File objects staged for the entry currently being composed
+let lastPhotoError = null; // surfaced in the sync banner so a failure mode is visible without devtools
 
 const els = {
   authPanel: document.getElementById("auth-panel"),
@@ -147,7 +148,9 @@ async function updateSyncBanner() {
     const parts = [];
     if (queuedEntries.length) parts.push(`${queuedEntries.length} ${queuedEntries.length === 1 ? "entry" : "entries"}`);
     if (queuedPhotos.length) parts.push(`${queuedPhotos.length} ${queuedPhotos.length === 1 ? "photo" : "photos"}`);
-    els.syncBanner.textContent = `${parts.join(", ")} waiting to sync`;
+    let text = `${parts.join(", ")} waiting to sync`;
+    if (lastPhotoError) text += ` (last error: ${lastPhotoError})`;
+    els.syncBanner.textContent = text;
     els.syncBanner.classList.remove("hidden");
   } else {
     els.syncBanner.classList.add("hidden");
@@ -178,9 +181,14 @@ async function syncQueue() {
   const queuedPhotos = await getQueuedPhotos();
   for (const item of queuedPhotos) {
     try {
-      const ok = await uploadSinglePhoto(item.entryId, item.file);
-      if (ok) await removeQueuedPhoto(item.queuedAt);
-    } catch {
+      const result = await uploadSinglePhoto(item.entryId, item.file);
+      if (result.ok) {
+        await removeQueuedPhoto(item.queuedAt);
+      } else {
+        lastPhotoError = result.error;
+      }
+    } catch (err) {
+      lastPhotoError = err?.message ?? String(err);
       break;
     }
   }
@@ -306,23 +314,23 @@ function renderPhotoThumbs() {
 // since callers rely on that to distinguish "this failed" from "this
 // crashed the whole operation."
 async function uploadSinglePhoto(entryId, file) {
-  if (!currentPersonId) return false;
+  if (!currentPersonId) return { ok: false, error: "no signed-in person" };
   try {
     const path = `${currentPersonId}/${entryId}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
     const { error: uploadError } = await supabase.storage.from("entry-photos").upload(path, file);
     if (uploadError) {
       console.error("photo upload failed", uploadError);
-      return false;
+      return { ok: false, error: `upload: ${uploadError.message}` };
     }
     const { error: insertError } = await supabase.from("entry_photos").insert({ entry_id: entryId, storage_path: path });
     if (insertError) {
       console.error("entry_photos insert failed", insertError);
-      return false;
+      return { ok: false, error: `insert: ${insertError.message}` };
     }
-    return true;
+    return { ok: true };
   } catch (err) {
     console.error("photo upload threw", err);
-    return false;
+    return { ok: false, error: `threw: ${err?.message ?? String(err)}` };
   }
 }
 
@@ -339,8 +347,9 @@ async function uploadSinglePhoto(entryId, file) {
 async function uploadPhotos(entryId, photos) {
   if (!currentPersonId || !photos.length) return;
   for (const file of photos) {
-    const ok = await uploadSinglePhoto(entryId, file);
-    if (!ok) {
+    const result = await uploadSinglePhoto(entryId, file);
+    if (!result.ok) {
+      lastPhotoError = result.error;
       await queuePhoto(entryId, file);
     }
   }
