@@ -54,12 +54,19 @@ if (navigator.storage?.persist) {
 
 const DB_NAME = "lifelog-queue";
 const STORE_NAME = "pending-entries";
+const PHOTO_STORE_NAME = "pending-photos";
 
 function openQueueDb() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      req.result.createObjectStore(STORE_NAME, { keyPath: "queuedAt" });
+    const req = indexedDB.open(DB_NAME, 2);
+    req.onupgradeneeded = (event) => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: "queuedAt" });
+      }
+      if (!db.objectStoreNames.contains(PHOTO_STORE_NAME)) {
+        db.createObjectStore(PHOTO_STORE_NAME, { keyPath: "queuedAt" });
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -96,10 +103,51 @@ async function removeQueuedEntry(queuedAt) {
   });
 }
 
+// Separate store for photos whose ENTRY already exists in Supabase but
+// whose upload itself failed (e.g. a network drop mid-upload of a
+// multi-MB camera photo) -- these must never trigger a re-submit of the
+// text, which already succeeded. Keyed by queuedAt, same shape idea as
+// pending-entries but independent so the two failure modes can't get
+// conflated the way they did before this fix.
+
+async function queuePhoto(entryId, file) {
+  const db = await openQueueDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PHOTO_STORE_NAME, "readwrite");
+    tx.objectStore(PHOTO_STORE_NAME).put({ entryId, file, queuedAt: Date.now() + Math.random() });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+async function getQueuedPhotos() {
+  const db = await openQueueDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PHOTO_STORE_NAME, "readonly");
+    const req = tx.objectStore(PHOTO_STORE_NAME).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function removeQueuedPhoto(queuedAt) {
+  const db = await openQueueDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(PHOTO_STORE_NAME, "readwrite");
+    tx.objectStore(PHOTO_STORE_NAME).delete(queuedAt);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 async function updateSyncBanner() {
-  const queued = await getQueuedEntries();
-  if (queued.length > 0) {
-    els.syncBanner.textContent = `${queued.length} ${queued.length === 1 ? "entry" : "entries"} waiting to sync`;
+  const [queuedEntries, queuedPhotos] = await Promise.all([getQueuedEntries(), getQueuedPhotos()]);
+  const total = queuedEntries.length + queuedPhotos.length;
+  if (total > 0) {
+    const parts = [];
+    if (queuedEntries.length) parts.push(`${queuedEntries.length} ${queuedEntries.length === 1 ? "entry" : "entries"}`);
+    if (queuedPhotos.length) parts.push(`${queuedPhotos.length} ${queuedPhotos.length === 1 ? "photo" : "photos"}`);
+    els.syncBanner.textContent = `${parts.join(", ")} waiting to sync`;
     els.syncBanner.classList.remove("hidden");
   } else {
     els.syncBanner.classList.add("hidden");
@@ -107,16 +155,17 @@ async function updateSyncBanner() {
 }
 
 async function syncQueue() {
-  const queued = await getQueuedEntries();
-  for (const item of queued) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) return;
+
+  const queuedEntries = await getQueuedEntries();
+  for (const item of queuedEntries) {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return; // not signed in, can't sync
       const res = await submitEntry(item.payload, session.access_token);
       if (res.ok) {
+        const data = await res.json();
         if (item.photos?.length) {
-          const data = await res.json();
-          await uploadPhotos(data.id, item.photos);
+          await uploadPhotos(data.id, item.photos); // failures here queue individually, never re-throws
         }
         await removeQueuedEntry(item.queuedAt);
       }
@@ -125,6 +174,17 @@ async function syncQueue() {
       break;
     }
   }
+
+  const queuedPhotos = await getQueuedPhotos();
+  for (const item of queuedPhotos) {
+    try {
+      const ok = await uploadSinglePhoto(item.entryId, item.file);
+      if (ok) await removeQueuedPhoto(item.queuedAt);
+    } catch {
+      break;
+    }
+  }
+
   await updateSyncBanner();
 }
 
@@ -240,22 +300,51 @@ function renderPhotoThumbs() {
   });
 }
 
-async function uploadPhotos(entryId, photos) {
-  // Uses the main `supabase` client directly -- it already carries the
-  // signed-in session (supabase-js persists/refreshes this internally),
-  // so a second manually-authenticated client here was redundant and a
-  // real bug risk (manual header injection doesn't get the same
-  // session-refresh handling the SDK does automatically).
-  if (!currentPersonId || !photos.length) return;
-  for (const [i, file] of photos.entries()) {
-    const path = `${currentPersonId}/${entryId}/${Date.now()}-${i}.jpg`;
+// Uploads one photo; returns true on success, false on failure. Never
+// throws -- a network exception mid-upload (very plausible for a
+// multi-MB real camera photo on a mobile connection) must not propagate,
+// since callers rely on that to distinguish "this failed" from "this
+// crashed the whole operation."
+async function uploadSinglePhoto(entryId, file) {
+  if (!currentPersonId) return false;
+  try {
+    const path = `${currentPersonId}/${entryId}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
     const { error: uploadError } = await supabase.storage.from("entry-photos").upload(path, file);
     if (uploadError) {
       console.error("photo upload failed", uploadError);
-      continue;
+      return false;
     }
-    await supabase.from("entry_photos").insert({ entry_id: entryId, storage_path: path });
+    const { error: insertError } = await supabase.from("entry_photos").insert({ entry_id: entryId, storage_path: path });
+    if (insertError) {
+      console.error("entry_photos insert failed", insertError);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("photo upload threw", err);
+    return false;
   }
+}
+
+// Uses the main `supabase` client directly -- it already carries the
+// signed-in session (supabase-js persists/refreshes this internally), so
+// a second manually-authenticated client here was redundant and a real
+// bug risk (manual header injection doesn't get the same session-refresh
+// handling the SDK does automatically).
+//
+// Critical: a failed photo here must NEVER cause the caller to think the
+// whole entry submission failed -- the text entry this is attached to has
+// already been successfully created by this point. Each failed photo is
+// queued individually for retry instead of throwing.
+async function uploadPhotos(entryId, photos) {
+  if (!currentPersonId || !photos.length) return;
+  for (const file of photos) {
+    const ok = await uploadSinglePhoto(entryId, file);
+    if (!ok) {
+      await queuePhoto(entryId, file);
+    }
+  }
+  await updateSyncBanner();
 }
 
 // ---------- Location / weather context ----------
