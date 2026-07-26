@@ -1,10 +1,17 @@
-// Minimal service worker: caches the app shell so the UI itself loads
-// offline (essential -- without this, no connectivity means no app to even
-// queue an entry in). Never caches API calls to Supabase; those always hit
-// the network, and the app's own IndexedDB queue (in app.js) is what
-// handles "no connectivity" for actual data, not this cache.
+// App-shell caching, network-first (not cache-first). This app is under
+// active development -- cache-first meant a code update could deploy to
+// the server but never actually reach an already-installed phone, since
+// browsers only detect a new service worker by byte-diffing sw.js itself,
+// and a change to app.js alone doesn't touch this file. Confirmed this
+// happened for real: a bug fix shipped, but a phone kept running the old
+// buggy app.js indefinitely because the cache was never invalidated.
+//
+// Network-first still gives the offline-shell guarantee that matters (the
+// UI itself must load with zero connectivity so there's something to
+// queue an entry in) -- it just tries the network first and only falls
+// back to cache on failure, instead of the reverse.
 
-const CACHE_NAME = "lifelog-shell-v1";
+const CACHE_NAME = "lifelog-shell-v2";
 const SHELL_FILES = ["./", "./index.html", "./app.js", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -21,18 +28,15 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-  // Only handle same-origin shell files; everything else (Supabase API
-  // calls, external resources) goes straight to the network untouched.
   if (url.origin !== location.origin) return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((res) => {
+    fetch(event.request)
+      .then((res) => {
         const clone = res.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         return res;
-      }).catch(() => cached);
-    })
+      })
+      .catch(() => caches.match(event.request))
   );
 });
