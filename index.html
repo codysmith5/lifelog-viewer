@@ -16,7 +16,7 @@
     body {
       font-family: -apple-system, system-ui, sans-serif;
       margin: 0;
-      padding: 12px 14px 90px;
+      padding: max(12px, env(safe-area-inset-top)) 14px calc(90px + env(safe-area-inset-bottom));
       background: #f5f5f5;
       color: #1a1a1a;
     }
@@ -64,7 +64,7 @@
       top: 0; left: 0; right: 0;
       background: #f9a825;
       color: #1a1a1a;
-      padding: 8px 14px;
+      padding: calc(8px + env(safe-area-inset-top)) 14px 8px;
       font-size: 13px;
       text-align: center;
       z-index: 100;
@@ -179,7 +179,7 @@
     </div>
   </div>
 
-  <div id="app-version" style="position:fixed;bottom:2px;right:6px;font-size:10px;color:#888;z-index:50;"></div>
+  <div id="app-version" style="position:fixed;bottom:calc(2px + env(safe-area-inset-bottom));right:6px;font-size:10px;color:#888;z-index:50;"></div>
 
   <script type="module" src="app.js"></script>
 </body>
