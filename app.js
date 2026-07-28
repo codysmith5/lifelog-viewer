@@ -12,7 +12,7 @@ const ANALYZE_PHOTO_URL = `${SUPABASE_URL}/functions/v1/analyze-photo`;
 // stream (and now directly on-screen, see below) which actual code a
 // device is running, instead of guessing whether a fix has "really"
 // reached it.
-const APP_VERSION = "2026-07-28-diag2";
+const APP_VERSION = "2026-07-28-diag3";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -48,6 +48,8 @@ const els = {
   emailInput: document.getElementById("email-input"),
   sendLinkBtn: document.getElementById("send-link-btn"),
   authStatus: document.getElementById("auth-status"),
+  pasteLinkInput: document.getElementById("paste-link-input"),
+  pasteLinkBtn: document.getElementById("paste-link-btn"),
   signOutBtn: document.getElementById("sign-out-btn"),
   syncBanner: document.getElementById("sync-banner"),
   tabLog: document.getElementById("tab-log"),
@@ -321,6 +323,34 @@ els.sendLinkBtn.addEventListener("click", async () => {
   });
   els.sendLinkBtn.disabled = false;
   els.authStatus.textContent = error ? `Error: ${error.message}` : "Check your email for the sign-in link.";
+});
+
+// A home-screen PWA on iOS has its own storage, isolated from Safari --
+// tapping the magic-link email always opens Safari, never the installed
+// icon, and the standalone app has no address bar to navigate a link
+// into anyway. This lets a session get established without leaving the
+// standalone app at all: copy the link from Mail, paste it here, and
+// verify it directly against Supabase using the token embedded in it.
+els.pasteLinkBtn.addEventListener("click", async () => {
+  const raw = els.pasteLinkInput.value.trim();
+  if (!raw) return;
+  els.pasteLinkBtn.disabled = true;
+  els.authStatus.textContent = "Signing in...";
+  try {
+    const match = raw.match(/https?:\/\/\S+/);
+    const url = new URL(match ? match[0] : raw);
+    const token = url.searchParams.get("token");
+    const type = url.searchParams.get("type") || "magiclink";
+    if (!token) throw new Error("Couldn't find a token in that link -- paste the whole link from the email.");
+    const { error } = await supabase.auth.verifyOtp({ token_hash: token, type });
+    if (error) throw error;
+    els.pasteLinkInput.value = "";
+    els.authStatus.textContent = "Signed in.";
+  } catch (err) {
+    els.authStatus.textContent = `Error: ${err?.message ?? String(err)}`;
+  } finally {
+    els.pasteLinkBtn.disabled = false;
+  }
 });
 
 els.signOutBtn.addEventListener("click", async () => {
