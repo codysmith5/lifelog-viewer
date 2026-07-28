@@ -5,8 +5,29 @@ const SUPABASE_PUBLISHABLE_KEY = "sb_publishable_NcT6jYqiuVGBgf-l1LxQTg_hrakJcU8
 const ENTRIES_URL = `${SUPABASE_URL}/functions/v1/entries`;
 const CLEANUP_URL = `${SUPABASE_URL}/functions/v1/cleanup-dictation`;
 const EDIT_URL = `${SUPABASE_URL}/functions/v1/edit-entry`;
+const CLIENT_LOG_URL = `${SUPABASE_URL}/functions/v1/client-log`;
+
+// Bumped by hand on every deploy -- lets us confirm from the remote log
+// stream which actual code a device is running, instead of guessing
+// whether a fix has "really" reached it.
+const APP_VERSION = "2026-07-28-diag1";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+
+// Fire-and-forget remote diagnostic logging -- must never throw or block
+// the caller. Temporary, for tracking down the sync-queue bug on a real
+// device without needing a tethered Web Inspector session.
+function logEvent(event, detail) {
+  try {
+    fetch(CLIENT_LOG_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ event, detail: { ...detail, appVersion: APP_VERSION, ts: new Date().toISOString() } }),
+    }).catch(() => {});
+  } catch {
+    // ignore
+  }
+}
 
 const DOMAIN_COLORS = {
   bowel_movement: "#8d6e63", sleep: "#5c6bc0", food: "#fb8c00", caffeine: "#6d4c41",
@@ -45,8 +66,24 @@ const els = {
 
 // ---------- Service worker + storage persistence ----------
 
+logEvent("page_load", {
+  controllerScriptURL: navigator.serviceWorker?.controller?.scriptURL ?? null,
+  standalone: window.matchMedia?.("(display-mode: standalone)").matches ?? null,
+});
+
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js");
+  navigator.serviceWorker.register("./sw.js").then((reg) => {
+    logEvent("sw_registered", {
+      active: reg.active?.scriptURL ?? null,
+      waiting: reg.waiting?.scriptURL ?? null,
+      installing: reg.installing?.scriptURL ?? null,
+    });
+    reg.addEventListener("updatefound", () => {
+      logEvent("sw_updatefound", { newWorkerState: reg.installing?.state ?? null });
+    });
+  }).catch((err) => {
+    logEvent("sw_register_failed", { error: err?.message ?? String(err) });
+  });
 }
 if (navigator.storage?.persist) {
   navigator.storage.persist();
@@ -198,12 +235,15 @@ async function updateSyncBanner() {
 
 async function syncQueue() {
   const { data: { session } } = await supabase.auth.getSession();
+  logEvent("sync_queue_start", { hasSession: !!session });
   if (!session) return;
 
   const queuedEntries = await getQueuedEntries();
+  logEvent("sync_queue_entries", { count: queuedEntries.length });
   for (const item of queuedEntries) {
     try {
       const res = await submitEntry(item.payload, session.access_token);
+      logEvent("sync_retry_submit_response", { status: res.status, ok: res.ok, raw_text: item.payload?.raw_text });
       if (res.ok) {
         const data = await res.json();
         if (item.photos?.length) {
@@ -222,6 +262,7 @@ async function syncQueue() {
       }
     } catch (err) {
       lastEntryError = err?.message ?? String(err);
+      logEvent("sync_retry_submit_threw", { error: lastEntryError });
       break;
     }
   }
@@ -362,22 +403,27 @@ function renderPhotoThumbs() {
 // since callers rely on that to distinguish "this failed" from "this
 // crashed the whole operation."
 async function uploadSinglePhoto(entryId, file) {
+  logEvent("photo_upload_attempt", { entryId, name: file?.name, type: file?.type, size: file?.size, hasCurrentPersonId: !!currentPersonId });
   if (!currentPersonId) return { ok: false, error: "no signed-in person" };
   try {
     const path = `${currentPersonId}/${entryId}/${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
     const { error: uploadError } = await supabase.storage.from("entry-photos").upload(path, file);
     if (uploadError) {
       console.error("photo upload failed", uploadError);
+      logEvent("photo_upload_failed", { stage: "upload", error: uploadError.message });
       return { ok: false, error: `upload: ${uploadError.message}` };
     }
     const { error: insertError } = await supabase.from("entry_photos").insert({ entry_id: entryId, storage_path: path });
     if (insertError) {
       console.error("entry_photos insert failed", insertError);
+      logEvent("photo_upload_failed", { stage: "insert", error: insertError.message });
       return { ok: false, error: `insert: ${insertError.message}` };
     }
+    logEvent("photo_upload_succeeded", { path });
     return { ok: true };
   } catch (err) {
     console.error("photo upload threw", err);
+    logEvent("photo_upload_failed", { stage: "threw", error: err?.message ?? String(err) });
     return { ok: false, error: `threw: ${err?.message ?? String(err)}` };
   }
 }
@@ -489,8 +535,10 @@ els.submitBtn.addEventListener("click", async () => {
 
   try {
     const { data: { session } } = await supabase.auth.getSession();
+    logEvent("submit_attempt", { hasSession: !!session, raw_text, photoCount: photosToSend.length });
     if (!session) throw new Error("not signed in");
     const res = await submitEntry(payload, session.access_token);
+    logEvent("submit_response", { status: res.status, ok: res.ok });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       throw new Error(`server error ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
@@ -505,6 +553,7 @@ els.submitBtn.addEventListener("click", async () => {
     loadHistory();
   } catch (err) {
     lastEntryError = err?.message ?? String(err);
+    logEvent("submit_threw", { error: lastEntryError, raw_text });
     await queueEntry({ payload, photos: photosToSend });
     els.logStatus.textContent = "No connection -- saved locally, will sync automatically.";
     els.entryText.value = "";
