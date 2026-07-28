@@ -6,6 +6,7 @@ const ENTRIES_URL = `${SUPABASE_URL}/functions/v1/entries`;
 const CLEANUP_URL = `${SUPABASE_URL}/functions/v1/cleanup-dictation`;
 const EDIT_URL = `${SUPABASE_URL}/functions/v1/edit-entry`;
 const CLIENT_LOG_URL = `${SUPABASE_URL}/functions/v1/client-log`;
+const ANALYZE_PHOTO_URL = `${SUPABASE_URL}/functions/v1/analyze-photo`;
 
 // Bumped by hand on every deploy -- lets us confirm from the remote log
 // stream which actual code a device is running, instead of guessing
@@ -402,6 +403,24 @@ function renderPhotoThumbs() {
 // multi-MB real camera photo on a mobile connection) must not propagate,
 // since callers rely on that to distinguish "this failed" from "this
 // crashed the whole operation."
+// Fire-and-forget: asks Claude to describe the photo (food details,
+// portion, preparation) for future food-data extraction. Never awaited
+// by the caller -- a slow or failed description must not hold up or
+// break the photo upload flow, which already succeeded by this point.
+async function triggerPhotoAnalysis(photoId, storagePath) {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) return;
+    fetch(ANALYZE_PHOTO_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
+      body: JSON.stringify({ record: { id: photoId, storage_path: storagePath } }),
+    }).catch((err) => logEvent("analyze_photo_call_failed", { error: err?.message ?? String(err) }));
+  } catch (err) {
+    logEvent("analyze_photo_call_failed", { error: err?.message ?? String(err) });
+  }
+}
+
 async function uploadSinglePhoto(entryId, file) {
   logEvent("photo_upload_attempt", { entryId, name: file?.name, type: file?.type, size: file?.size, hasCurrentPersonId: !!currentPersonId });
   if (!currentPersonId) return { ok: false, error: "no signed-in person" };
@@ -413,13 +432,18 @@ async function uploadSinglePhoto(entryId, file) {
       logEvent("photo_upload_failed", { stage: "upload", error: uploadError.message });
       return { ok: false, error: `upload: ${uploadError.message}` };
     }
-    const { error: insertError } = await supabase.from("entry_photos").insert({ entry_id: entryId, storage_path: path });
+    const { data: photoRow, error: insertError } = await supabase
+      .from("entry_photos")
+      .insert({ entry_id: entryId, storage_path: path })
+      .select("id")
+      .single();
     if (insertError) {
       console.error("entry_photos insert failed", insertError);
       logEvent("photo_upload_failed", { stage: "insert", error: insertError.message });
       return { ok: false, error: `insert: ${insertError.message}` };
     }
     logEvent("photo_upload_succeeded", { path });
+    triggerPhotoAnalysis(photoRow.id, path);
     return { ok: true };
   } catch (err) {
     console.error("photo upload threw", err);
