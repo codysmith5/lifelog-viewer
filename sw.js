@@ -10,8 +10,16 @@
 // UI itself must load with zero connectivity so there's something to
 // queue an entry in) -- it just tries the network first and only falls
 // back to cache on failure, instead of the reverse.
+//
+// Critical: the network fetch must use {cache: "no-store"}. GitHub Pages
+// serves app.js with `cache-control: max-age=600`, so a plain fetch() can
+// be silently satisfied by the browser's own HTTP cache for up to 10
+// minutes -- never touching the network at all -- even though this
+// handler is nominally "network-first". Confirmed this happened for
+// real: deployed fixes weren't reaching an already-open phone despite
+// this service worker being active and current.
 
-const CACHE_NAME = "lifelog-shell-v2";
+const CACHE_NAME = "lifelog-shell-v3";
 const SHELL_FILES = ["./", "./index.html", "./app.js", "./manifest.json", "./icon.svg"];
 
 self.addEventListener("install", (event) => {
@@ -31,7 +39,7 @@ self.addEventListener("fetch", (event) => {
   if (url.origin !== location.origin) return;
 
   event.respondWith(
-    fetch(event.request)
+    fetch(event.request, { cache: "no-store" })
       .then((res) => {
         const clone = res.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
