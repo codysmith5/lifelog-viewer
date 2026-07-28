@@ -12,7 +12,7 @@ const ANALYZE_PHOTO_URL = `${SUPABASE_URL}/functions/v1/analyze-photo`;
 // stream (and now directly on-screen, see below) which actual code a
 // device is running, instead of guessing whether a fix has "really"
 // reached it.
-const APP_VERSION = "2026-07-28-diag4";
+const APP_VERSION = "2026-07-28-diag5";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -546,12 +546,25 @@ function getLocalTzOffset() {
   return `${sign}${hh}:${mm}`;
 }
 
+// Errors here (permission denied, timeout, position unavailable) were
+// previously swallowed silently -- every recent PWA entry landing with
+// no location/weather data and no visible reason why is exactly what
+// that looks like from the outside. Now logged with the real error code.
 function getPosition() {
   return new Promise((resolve) => {
-    if (!navigator.geolocation) return resolve(null);
+    if (!navigator.geolocation) {
+      logEvent("geolocation_unavailable", {});
+      return resolve(null);
+    }
     navigator.geolocation.getCurrentPosition(
-      (pos) => resolve(pos.coords),
-      () => resolve(null),
+      (pos) => {
+        logEvent("geolocation_success", { accuracy: pos.coords.accuracy });
+        resolve(pos.coords);
+      },
+      (err) => {
+        logEvent("geolocation_failed", { code: err.code, message: err.message });
+        resolve(null);
+      },
       { timeout: 8000 }
     );
   });
