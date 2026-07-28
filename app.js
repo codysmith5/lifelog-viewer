@@ -491,7 +491,10 @@ els.submitBtn.addEventListener("click", async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) throw new Error("not signed in");
     const res = await submitEntry(payload, session.access_token);
-    if (!res.ok) throw new Error(`server error ${res.status}`);
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`server error ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+    }
     const data = await res.json();
     await uploadPhotos(data.id, photosToSend);
     els.logStatus.textContent = `Logged (${data.domain_tag ?? "uncertain"}).`;
@@ -501,6 +504,7 @@ els.submitBtn.addEventListener("click", async () => {
     els.onFlightCheck.checked = false;
     loadHistory();
   } catch (err) {
+    lastEntryError = err?.message ?? String(err);
     await queueEntry({ payload, photos: photosToSend });
     els.logStatus.textContent = "No connection -- saved locally, will sync automatically.";
     els.entryText.value = "";
