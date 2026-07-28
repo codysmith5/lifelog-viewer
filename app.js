@@ -17,6 +17,7 @@ const DOMAIN_COLORS = {
 let currentPersonId = null;
 let pendingPhotos = []; // File objects staged for the entry currently being composed
 let lastPhotoError = null; // surfaced in the sync banner so a failure mode is visible without devtools
+let lastEntryError = null; // same, for the queued-text-entry retry path
 
 const els = {
   authPanel: document.getElementById("auth-panel"),
@@ -160,6 +161,7 @@ async function showQueueDebug() {
       file: p.file ? { name: p.file.name, type: p.file.type, size: p.file.size } : null,
     })),
     lastPhotoError,
+    lastEntryError,
   };
 
   let box = document.getElementById("debug-output");
@@ -185,7 +187,8 @@ async function updateSyncBanner() {
     if (queuedEntries.length) parts.push(`${queuedEntries.length} ${queuedEntries.length === 1 ? "entry" : "entries"}`);
     if (queuedPhotos.length) parts.push(`${queuedPhotos.length} ${queuedPhotos.length === 1 ? "photo" : "photos"}`);
     let text = `${parts.join(", ")} waiting to sync`;
-    if (lastPhotoError) text += ` (last error: ${lastPhotoError})`;
+    if (lastEntryError) text += ` (entry error: ${lastEntryError})`;
+    if (lastPhotoError) text += ` (photo error: ${lastPhotoError})`;
     els.syncBanner.textContent = text;
     els.syncBanner.classList.remove("hidden");
   } else {
@@ -207,9 +210,18 @@ async function syncQueue() {
           await uploadPhotos(data.id, item.photos); // failures here queue individually, never re-throws
         }
         await removeQueuedEntry(item.queuedAt);
+        lastEntryError = null;
+      } else {
+        // Previously silent: a non-ok response (e.g. 401/500) fell through
+        // this branch doing nothing -- no error recorded, no retry signal,
+        // just an item stuck forever with no visible reason. Now recorded
+        // and surfaced in the banner instead of guessing blind.
+        const body = await res.text().catch(() => "");
+        lastEntryError = `server error ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`;
+        break;
       }
-    } catch {
-      // still offline or request failed -- leave queued, try again next sync
+    } catch (err) {
+      lastEntryError = err?.message ?? String(err);
       break;
     }
   }
