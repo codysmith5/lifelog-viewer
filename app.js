@@ -9,9 +9,10 @@ const CLIENT_LOG_URL = `${SUPABASE_URL}/functions/v1/client-log`;
 const ANALYZE_PHOTO_URL = `${SUPABASE_URL}/functions/v1/analyze-photo`;
 
 // Bumped by hand on every deploy -- lets us confirm from the remote log
-// stream which actual code a device is running, instead of guessing
-// whether a fix has "really" reached it.
-const APP_VERSION = "2026-07-28-diag1";
+// stream (and now directly on-screen, see below) which actual code a
+// device is running, instead of guessing whether a fix has "really"
+// reached it.
+const APP_VERSION = "2026-07-28-diag2";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -66,6 +67,9 @@ const els = {
 };
 
 // ---------- Service worker + storage persistence ----------
+
+const versionEl = document.getElementById("app-version");
+if (versionEl) versionEl.textContent = APP_VERSION;
 
 logEvent("page_load", {
   controllerScriptURL: navigator.serviceWorker?.controller?.scriptURL ?? null,
