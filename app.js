@@ -141,6 +141,42 @@ async function removeQueuedPhoto(queuedAt) {
   });
 }
 
+// Tap the sync banner to dump the actual queue contents into a copyable
+// textarea -- inferring what's stuck from the banner's summary text and
+// server-side polling was too indirect and kept leading to wrong guesses.
+// This shows exactly what's sitting in IndexedDB right now, ground truth.
+async function showQueueDebug() {
+  const [queuedEntries, queuedPhotos] = await Promise.all([getQueuedEntries(), getQueuedPhotos()]);
+  const summary = {
+    pendingEntries: queuedEntries.map((e) => ({
+      queuedAt: new Date(e.queuedAt).toISOString(),
+      raw_text: e.payload?.raw_text,
+      photoCount: e.photos?.length ?? 0,
+      photos: (e.photos ?? []).map((f) => ({ name: f.name, type: f.type, size: f.size })),
+    })),
+    pendingPhotos: queuedPhotos.map((p) => ({
+      queuedAt: new Date(p.queuedAt).toISOString(),
+      entryId: p.entryId,
+      file: p.file ? { name: p.file.name, type: p.file.type, size: p.file.size } : null,
+    })),
+    lastPhotoError,
+  };
+
+  let box = document.getElementById("debug-output");
+  if (!box) {
+    box = document.createElement("textarea");
+    box.id = "debug-output";
+    box.readOnly = true;
+    box.style.cssText = "position:fixed;top:40px;left:8px;right:8px;height:40vh;z-index:200;font-size:11px;font-family:monospace;";
+    document.body.appendChild(box);
+  }
+  box.value = JSON.stringify(summary, null, 2);
+  box.focus();
+  box.select();
+}
+
+els.syncBanner.addEventListener("click", showQueueDebug);
+
 async function updateSyncBanner() {
   const [queuedEntries, queuedPhotos] = await Promise.all([getQueuedEntries(), getQueuedPhotos()]);
   const total = queuedEntries.length + queuedPhotos.length;
