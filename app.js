@@ -12,7 +12,7 @@ const ANALYZE_PHOTO_URL = `${SUPABASE_URL}/functions/v1/analyze-photo`;
 // stream (and now directly on-screen, see below) which actual code a
 // device is running, instead of guessing whether a fix has "really"
 // reached it.
-const APP_VERSION = "2026-07-28-diag3";
+const APP_VERSION = "2026-07-28-diag4";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -92,8 +92,17 @@ if ("serviceWorker" in navigator) {
     logEvent("sw_register_failed", { error: err?.message ?? String(err) });
   });
 }
+// Persistent storage protects the signed-in session (and the offline
+// queue) from Safari's storage-pressure eviction. On iOS this is more
+// likely to actually be granted once notification permission is granted
+// too (see the Notification.requestPermission() call after sign-in
+// below) -- logging the outcome here since "am I actually protected"
+// was previously invisible.
 if (navigator.storage?.persist) {
-  navigator.storage.persist();
+  navigator.storage.persist().then((granted) => logEvent("storage_persist", { granted }));
+}
+if (navigator.storage?.persisted) {
+  navigator.storage.persisted().then((persisted) => logEvent("storage_persisted_check", { persisted }));
 }
 
 // ---------- IndexedDB offline queue ----------
@@ -303,6 +312,9 @@ async function refreshAuthUi() {
     currentPersonId = person?.id ?? null;
     if (Notification?.permission === "default") {
       Notification.requestPermission();
+    }
+    if (navigator.storage?.persist) {
+      navigator.storage.persist().then((granted) => logEvent("storage_persist_after_signin", { granted }));
     }
     await syncQueue();
     loadHistory();
