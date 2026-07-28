@@ -410,12 +410,15 @@ function renderPhotoThumbs() {
 async function triggerPhotoAnalysis(photoId, storagePath) {
   try {
     const { data: { session } } = await supabase.auth.getSession();
+    logEvent("analyze_photo_call_start", { photoId, hasSession: !!session });
     if (!session) return;
-    fetch(ANALYZE_PHOTO_URL, {
+    const res = await fetch(ANALYZE_PHOTO_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${session.access_token}` },
       body: JSON.stringify({ record: { id: photoId, storage_path: storagePath } }),
-    }).catch((err) => logEvent("analyze_photo_call_failed", { error: err?.message ?? String(err) }));
+    });
+    const bodyText = await res.text().catch(() => "");
+    logEvent("analyze_photo_call_response", { status: res.status, ok: res.ok, body: bodyText.slice(0, 300) });
   } catch (err) {
     logEvent("analyze_photo_call_failed", { error: err?.message ?? String(err) });
   }
