@@ -343,14 +343,26 @@ async function uploadSinglePhoto(entryId, file) {
 // Critical: a failed photo here must NEVER cause the caller to think the
 // whole entry submission failed -- the text entry this is attached to has
 // already been successfully created by this point. Each failed photo is
-// queued individually for retry instead of throwing.
+// queued individually for retry instead of throwing. This must hold even
+// if queuePhoto() itself throws (e.g. IndexedDB rejecting a large real
+// camera photo's Blob on iOS Safari) -- an earlier version only wrapped
+// the upload attempt, not the queuing fallback, so a queuePhoto() failure
+// still escaped into the caller and caused the whole entry (already-
+// successful text included) to be re-queued and resubmitted on every
+// subsequent sync, silently duplicating the text entry -- confirmed for
+// real via 3 duplicate rows appearing a couple minutes apart.
 async function uploadPhotos(entryId, photos) {
   if (!currentPersonId || !photos.length) return;
   for (const file of photos) {
-    const result = await uploadSinglePhoto(entryId, file);
-    if (!result.ok) {
-      lastPhotoError = result.error;
-      await queuePhoto(entryId, file);
+    try {
+      const result = await uploadSinglePhoto(entryId, file);
+      if (!result.ok) {
+        lastPhotoError = result.error;
+        await queuePhoto(entryId, file);
+      }
+    } catch (err) {
+      lastPhotoError = err?.message ?? String(err);
+      console.error("photo handling threw outside uploadSinglePhoto", err);
     }
   }
   await updateSyncBanner();
