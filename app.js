@@ -12,7 +12,7 @@ const ANALYZE_PHOTO_URL = `${SUPABASE_URL}/functions/v1/analyze-photo`;
 // stream (and now directly on-screen, see below) which actual code a
 // device is running, instead of guessing whether a fix has "really"
 // reached it.
-const APP_VERSION = "2026-07-28-diag5";
+const APP_VERSION = "2026-08-02-diag6";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -570,14 +570,22 @@ function getPosition() {
   });
 }
 
+// Silently returning nulls here (no throw, since BigDataCloud usually
+// responds 200 even when it can't resolve anything useful) was
+// indistinguishable from a real "no city here" result -- most PWA
+// entries have landed with real lat/lon + weather but null city/state,
+// and there was no way to tell why. Now logs the actual response.
 async function reverseGeocode(lat, lon) {
   try {
     const res = await fetch(
       `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
     );
     const data = await res.json();
-    return { city: data.city || data.locality || null, state: data.principalSubdivisionCode?.split("-")[1] || data.principalSubdivision || null };
-  } catch {
+    const result = { city: data.city || data.locality || null, state: data.principalSubdivisionCode?.split("-")[1] || data.principalSubdivision || null };
+    logEvent("reverse_geocode_result", { status: res.status, ok: res.ok, result, rawKeys: Object.keys(data ?? {}) });
+    return result;
+  } catch (err) {
+    logEvent("reverse_geocode_failed", { error: err?.message ?? String(err) });
     return { city: null, state: null };
   }
 }
