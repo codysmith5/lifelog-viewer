@@ -12,7 +12,7 @@ const ANALYZE_PHOTO_URL = `${SUPABASE_URL}/functions/v1/analyze-photo`;
 // stream (and now directly on-screen, see below) which actual code a
 // device is running, instead of guessing whether a fix has "really"
 // reached it.
-const APP_VERSION = "2026-08-02-diag6";
+const APP_VERSION = "2026-08-02-diag7";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
 
@@ -570,15 +570,17 @@ function getPosition() {
   });
 }
 
-// Silently returning nulls here (no throw, since BigDataCloud usually
-// responds 200 even when it can't resolve anything useful) was
-// indistinguishable from a real "no city here" result -- most PWA
-// entries have landed with real lat/lon + weather but null city/state,
-// and there was no way to tell why. Now logs the actual response.
+// Root cause of most PWA entries landing with real lat/lon + weather but
+// null city/state: api.bigdatacloud.net now 307-redirects to a new
+// domain (api-bdc.io), and following that redirect server-side returned
+// a bare 400 every time in testing -- calling the new domain directly
+// (one hop instead of two) is both the fix and just more reliable
+// regardless of the exact old-domain failure mode. Backfilled 43
+// historical rows that had this same silent gap.
 async function reverseGeocode(lat, lon) {
   try {
     const res = await fetch(
-      `https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
+      `https://api-bdc.io/data/reverse-geocode-client?latitude=${lat}&longitude=${lon}&localityLanguage=en`
     );
     const data = await res.json();
     const result = { city: data.city || data.locality || null, state: data.principalSubdivisionCode?.split("-")[1] || data.principalSubdivision || null };
